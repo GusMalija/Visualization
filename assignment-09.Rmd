@@ -1,0 +1,257 @@
+---
+title: "Assignment 9. Data visualization"
+author: "Augustine Malija"
+date: "11/11/2020"
+output: html_document
+---
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse) #for data visualization
+library(lubridate) #for wrangling dates
+library(legislatoR) #for accessing the dataset
+library(dplyr) #for data manipulation
+library(broom) #for presenting regression results as a table
+library(viridis) #for coloring heatmaps
+
+options(scipen = 999) #for consistent results
+memory.limit(size = 999999999999999)
+```
+
+
+<br>
+
+## 1. Fetching data on members of the 115th United States Congress
+
+The `legislatoR` package (https://github.com/saschagobel/legislatoR) provides access to the Comparative Legislators Database (CLD). The CLD includes political, sociodemographic, career, online presence, public attention, and visual information (organized in separate tables, very similar to a proper database structure) for over 45,000 contemporary and historical politicians from ten countries.
+
+Install the package (either from CRAN or GitHub) and use it to compile the following data into one dataset:
+
+a) The political data for the 115th session of the US House of Representatives
+b) The data on daily user traffic on individual Wikipedia biographies (use it to compute the average number of daily page views per representative between January 3, 2017 and January 3, 2019 and match the variable to the dataset)
+c) The information on the total number of sessions served by representative (compute it by counting the number of entries in the political table when grouped by representative).
+
+```{r}
+#a.extracting political data of the US house of representatives
+political <- get_political(legislature = "usa_house") %>% 
+  #filtering data for the 115th session
+  filter(session == 115)
+
+#b.extracting data on daily user traffic on individual wikipedia biographies
+individual_wiki <- get_traffic(legislature = "usa_house") 
+
+#computing the average views variable separately
+average_views <- individual_wiki%>% 
+  #filtering the specified range of dates
+  filter(date>="2017-01-03" & date<="2019-01-03") %>% 
+  #grouping by date
+  group_by(date) %>%
+  #computing the daily mean
+  summarise(avg_views = mean(traffic)) %>% 
+  #matching it to the original dataset
+  right_join(individual_wiki, by = "date")
+
+
+#c. computing total number of sessions served by a representative
+sessions_served <- get_political(legislature = "usa_house") %>% 
+  #grouping by representative
+  group_by(pageid) %>% 
+  #counting the number of entries
+  summarise(number_sessions = n())
+
+
+#compiling that data into one dataset
+compiled <- left_join(sessions_served, political, by = "pageid") %>% 
+  #right joining with average views dataframe
+  right_join(average_views, by = "pageid")
+```
+
+<br> 
+
+## 2. Exploring the dataset
+
+Explore the dataset using visual means, following the guidelines of good visualization. Provide three different visualizations. One visualization is entirely up to you. The two others should give any two of the following:
+
+a) gender or ethnicity distribution by party (Democrat/Republican; ignore the others)
+b) age distribution by state in which the representative's district is located (limit to states with 10+ representatives)
+c) top 10 representatives according to average daily page views
+d) log mean page views vs. the number of sessions served
+
+Transform the variables if needed (e.g., categorize continuous variables, pool residual categories into one, etc.).
+
+a. Gender/Ethnicity Distribution by Party
+```{r}
+#Observing that I do not have Gender and Ethnicity variables in my complied datasets, I extract them from the core dataset
+gender_ethn <- get_core(legislature = "usa_house") %>% 
+  #extracting gender and ethnicity variables
+  select(pageid, sex, ethnicity) %>% 
+  #joining it with the compiled dataset using the placeholder assignee reference
+  left_join(compiled, by = "pageid")
+
+#subsetting on democrats and republicans
+ggplot(subset(gender_ethn, party %in% c("R", "D")),
+       #specifying average views and traffic to be plotted
+              aes(x = avg_views,
+                  #specifying gender to distinct plots through color and shape
+                  color = sex,
+                  linetype = sex))+
+  #picking density plot as a geom
+         geom_line(stat = "density") +
+         labs(title = "Gender Distribution by Party",
+              subtitle = "Democrats and Republicans",
+              x = "Average Daily User Individual Wiki-Page Views",
+              y = "Daily User Individual Wiki-Page Views") +
+  #making the background of the plot lighter
+         theme_light()+
+  scale_color_brewer(palette = "Set1",
+                     name = "Ethinicity")+
+  scale_linetype_discrete(name = "Ethnicity")
+```
+
+c. Top ten Representatives according to average daily page views
+```{r}
+#sorting the top ten representatives
+top_ten <- compiled %>% 
+  #selecting variables of my interest
+  select(pageid, number_sessions, avg_views) %>% 
+  #sorting in a descending order
+  arrange(desc(avg_views)) %>% 
+  #picking only the top ten
+  slice(1:10)
+
+#plotting through faceting
+ggplot(top_ten, 
+       aes(x = pageid, y = avg_views, fill = pageid)) +
+  geom_col(position = position_dodge())
+```
+
+
+###Using heatmaps to plot the correlation between number of sessions and daily page views
+```{r}
+cors_sessions_views <- gender_ethn %>% 
+  group_by(ethnicity, date) %>% 
+  summarise(cor = cor(number_sessions, traffic)) %>% 
+  #filtering out ethnicity values that have NAs
+  filter(!is.na(ethnicity))
+
+#plotting a heatmap
+ggplot(cors_sessions_views,
+       aes(x = date, y = ethnicity, fill = cor)) +
+  geom_tile() +
+  #using color gradient schemes to better distinguish values in the plot
+  scale_fill_viridis(option = "inferno", name = "Correlation\ncoefficient",
+                     #extending correlation lits from zero to one
+                     limits = c(0,1)) +
+  labs(x ="",
+       y ="",
+       title = "Correlation Between and Legislation Dates") +
+  #making the plot's background lighter
+  theme_light() +
+  theme(panel.grid = element_blank(),
+        #positioning the legend to the bottom
+        legend.position = "bottom",
+        #adjusting the width of the legend to three centimetres
+        legend.key.width = unit(3, "cm"),
+        #omitting the border line around the plot
+        panel.border = element_blank(),
+        #omitting axis ticks infront of names
+        axis.ticks = element_blank()) +
+  #reducing space between plot and labels
+  coord_cartesian(expand = 0)
+
+```
+
+<br> 
+
+## 3. Modeling page views
+
+Finally, model the log number of mean page views as a function of the following variables: 
+
+  - number of sessions served, 
+  - party membership (Democrat/Republican/Independent)
+  - key political position (a dummy which takes the value 1 if the representative is one of the following: speaker, majority/minority leader/whip)
+  - age
+  - gender
+  - ethnicity (white/non-white)
+
+A linear model is just fine. Present the results of your model in both a table and a coefficient plot!
+
+```{r}
+#extracting age variable
+#setting todays date to replace with values containing NAs
+today <- ymd("2020-11-16")
+
+#obtaining core data with birth and death variables
+age_data <- get_core(legislature = "usa_house") %>%
+  #replacing NA values with today's date
+  #operating under the assumption that these legislators are still alive
+  mutate(death = replace_na(death, today)) %>% 
+  #calculating age with 366 days since 2020 is a leap year
+  mutate(age = interval(birth, death)/days(366)) %>% 
+  #selecting needed variables
+  select(pageid, age, sex, ethnicity)
+
+
+#specifying party membership and political positions
+#for consistency, I pick observations for 155th session
+membership_poltpos <- political %>% 
+  filter(party %in% c("R","D","I"))
+
+#writing a function to add a dummy variable of specified variables for political position
+#looping through to specify from frist row to last row
+for (row in 1:nrow(membership_poltpos)){
+  #renaming variables
+  speaker <- membership_poltpos[row,"house_speaker"]
+  maj_leader <- membership_poltpos[row, "house_majority_leader"]
+  min_leader <- membership_poltpos[row, "house_minority_leader"]
+  maj_whip <- membership_poltpos[row, "house_majority_whip"]
+  min_whip <- membership_poltpos[row, "house_minority_whip"]
+  #applying the or argument between variables to return dummy variables  
+  if (speaker == T | maj_leader == T | min_leader == T | maj_whip == T | min_whip == T){membership_poltpos$pol_position[row] <- 1}
+  else{membership_poltpos$pol_position[row]<- 0}
+}
+
+#picking only wanted variables
+membership_poltpos <- membership_poltpos %>% 
+  select(pageid, pol_position, party)
+
+#log transforming and compiling datasets
+log_page_views <- compiled %>%
+  #adding a log of mean page views variable
+  mutate(log_views = log(avg_views)) %>% 
+  select(pageid, number_sessions, log_views) %>% 
+  #joining the datasets
+  left_join(age_data, by = "pageid") %>% 
+  left_join(membership_poltpos, by = "pageid")
+
+#running the linear regression
+log_linear <- lm(log_views ~ number_sessions + party + pol_position + age + sex + ethnicity, data = log_page_views)
+
+#presenting results in a data frame
+table <- tidy(log_linear)
+#presenting them as a table
+table
+```
+
+
+###Doing a Coefficient Plot out of the table
+```{r}
+table %>% 
+  #filtering out the intercept
+  filter(term != "(Intercept)") %>% 
+  ggplot(aes(x = term, y = estimate))+
+  #adding a line for the null effect after dropping the intercept
+  geom_hline(yintercept = 0, color = "purple")+
+  #indicating the points for our values
+  geom_point()+
+  #adding confidence intervals
+  geom_linerange(aes(ymin = estimate - 1.96*std.error, ymax = estimate + 1.96*std.error))+
+  geom_linerange(aes(ymin = estimate - 1.65*std.error, ymax = estimate + 1.65*std.error), size = 1.5)+
+  #naming my axes
+  labs(x ="Variables",
+       y = "OLS Coefficient with 90% and 95% Confidence Intervals")+
+  #flipping the coordinates
+  coord_flip()+
+  #making the background lighter and ready for presentation
+  theme_light()
+```
+
